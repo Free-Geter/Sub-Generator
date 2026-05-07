@@ -1,0 +1,11 @@
+{
+  "video_source_dir": "/Users/eleme/Documents/Qoder/视频字幕/subtitle-generator/videos",
+  "translation_engine": "deepl",
+  "deepl_api_key": "",
+  "openai_api_key": "",
+  "openai_base_url": "",
+  "ollama_base_url": "http://localhost:11434",
+  "ollama_model": "qwen2.5:7b",
+  "whisper_model": "large-v2",
+  "default_target_lang": "zh"
+}
