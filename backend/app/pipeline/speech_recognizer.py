@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 from dataclasses import dataclass
 from typing import Callable, List, Optional
 
@@ -18,22 +19,43 @@ class RecognizedSegment:
 class SpeechRecognizer:
     """基于 faster-whisper 的语音识别器"""
 
-    def __init__(self, model_size: str = "medium", device: str = "auto"):
+    def __init__(self, model_size: str = "medium", device: str = "auto", download_root: str = None):
         """
         Args:
             model_size: Whisper 模型大小 (tiny/base/small/medium/large-v2)
             device: 计算设备 (auto/cpu/cuda)
+            download_root: 模型下载/缓存目录，默认使用 faster-whisper 内置路径
         """
+        import os
         from faster_whisper import WhisperModel
 
         if device == "auto":
             import torch
             device = "cuda" if torch.cuda.is_available() else "cpu"
 
+        # Windows CUDA 下限制底层库线程，避免死锁
+        if device == "cuda":
+            os.environ.setdefault("OMP_NUM_THREADS", "1")
+            os.environ.setdefault("MKL_NUM_THREADS", "1")
+            os.environ.setdefault("OPENBLAS_NUM_THREADS", "1")
+
         compute_type = "int8" if device == "cpu" else "float16"
 
+        # 设置 HuggingFace 缓存目录，使模型下载到指定位置
+        if download_root:
+            os.makedirs(download_root, exist_ok=True)
+            os.environ["HF_HOME"] = download_root
+            logger.info(f"Model cache directory set to: {download_root}")
+
         logger.info(f"Loading Whisper model: {model_size} on {device} with {compute_type}")
-        self.model = WhisperModel(model_size, device=device, compute_type=compute_type)
+        self.model = WhisperModel(
+            model_size,
+            device=device,
+            compute_type=compute_type,
+            download_root=download_root if download_root else None,
+            cpu_threads=1,
+            num_workers=1,
+        )
         logger.info("Whisper model loaded successfully")
 
     async def recognize_chunks(
@@ -59,6 +81,15 @@ class SpeechRecognizer:
 
         for idx, chunk_path in enumerate(chunk_paths):
             time_offset = idx * chunk_duration
+
+            # 防御性检查：确保音频文件存在
+            if not os.path.exists(chunk_path):
+                logger.warning(f"Chunk file not found, skipping: {chunk_path}")
+                continue
+            file_size = os.path.getsize(chunk_path)
+            if file_size == 0:
+                logger.warning(f"Chunk file is empty, skipping: {chunk_path}")
+                continue
 
             segments, language = await asyncio.to_thread(
                 self._recognize_single_chunk, chunk_path, time_offset

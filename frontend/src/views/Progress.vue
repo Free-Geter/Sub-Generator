@@ -8,22 +8,34 @@
         </div>
       </template>
 
-      <ProgressBar :currentStep="currentStep" :progress="totalProgress" />
+      <!-- 加载骨架 -->
+      <template v-if="loading">
+        <el-skeleton :rows="4" animated />
+      </template>
 
-      <div class="progress-detail">
-        <p>当前步骤：<strong>{{ currentStepName }}</strong></p>
-        <p>总进度：<strong>{{ totalProgress }}%</strong></p>
-        <p v-if="message" class="step-message">{{ message }}</p>
-      </div>
+      <template v-else>
+        <ProgressBar :currentStep="currentStep" :progress="totalProgress" />
 
-      <div class="progress-actions" v-if="status === 'done' || status === 'completed'">
-        <el-button type="primary" @click="handleDownload">下载 SRT</el-button>
-        <el-button type="success" @click="showPreview = true">查看预览</el-button>
-      </div>
+        <div class="progress-detail">
+          <p>当前步骤：<strong>{{ currentStepName }}</strong></p>
+          <p>总进度：<strong>{{ Math.round(totalProgress) }}%</strong></p>
+          <p v-if="elapsedTime" class="step-message">已耗时：{{ elapsedTime }}</p>
+          <p v-if="statusMessage" class="step-message">{{ statusMessage }}</p>
+        </div>
 
-      <div class="progress-actions" v-if="status === 'failed'">
-        <el-alert type="error" :title="errorMsg || '任务执行失败'" show-icon :closable="false" />
-      </div>
+        <div class="progress-actions" v-if="status === 'done'">
+          <el-button type="primary" @click="handleDownload">下载 SRT</el-button>
+          <el-button type="success" @click="showPreview = true">查看预览</el-button>
+        </div>
+
+        <div class="progress-actions" v-if="status === 'failed'">
+          <el-alert type="error" :title="errorMsg || '任务执行失败'" show-icon :closable="false" />
+        </div>
+
+        <div class="progress-actions" v-if="isFinished">
+          <el-button @click="$router.push('/')">返回首页</el-button>
+        </div>
+      </template>
     </el-card>
 
     <SubtitlePreview v-model="showPreview" :taskId="taskId" />
@@ -32,59 +44,140 @@
 
 <script setup>
 import { ref, computed, onMounted, onUnmounted } from 'vue'
-import { useRoute } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 import { ElMessage } from 'element-plus'
 import ProgressBar from '@/components/ProgressBar.vue'
 import SubtitlePreview from '@/components/SubtitlePreview.vue'
-import { createWebSocket } from '@/utils/websocket'
 import api from '@/api'
 
 const route = useRoute()
+const router = useRouter()
 const taskId = computed(() => route.params.id)
 
 const currentStep = ref(0)
 const totalProgress = ref(0)
 const status = ref('')
-const message = ref('')
 const errorMsg = ref('')
 const showPreview = ref(false)
+const loading = ref(true)
+const createdAt = ref(null)
+const now = ref(Date.now())
 
-let wsConnection = null
+let pollTimer = null
+let clockTimer = null
 
+// 后端 status → 数字索引映射
+const STEP_MAP = { extracting: 0, recognizing: 1, translating: 2, generating: 3, done: 4, failed: -1 }
 const stepNames = ['音频提取', '语音识别', '翻译', 'SRT生成']
+const FINAL_STATUSES = ['done', 'failed', 'cancelled']
+
+// 各阶段的进度范围（用于推导状态描述）
+const PHASE_RANGE = {
+  extracting:   { min: 5,  max: 30  },
+  recognizing:  { min: 30, max: 60  },
+  translating:  { min: 62, max: 90  },
+  generating:   { min: 92, max: 100 },
+}
+
+const isFinished = computed(() => FINAL_STATUSES.includes(status.value))
 
 const currentStepName = computed(() => {
-  if (status.value === 'done' || status.value === 'completed') return '全部完成'
-  return stepNames[currentStep.value] || '准备中'
+  if (status.value === 'done') return '全部完成'
+  if (status.value === 'failed') return '任务失败'
+  if (status.value === 'cancelled') return '已取消'
+  const idx = STEP_MAP[status.value]
+  if (idx !== undefined && idx >= 0 && idx < stepNames.length) return stepNames[idx]
+  return '准备中'
 })
 
 const statusType = computed(() => {
-  const map = { pending: 'info', processing: 'warning', done: 'success', completed: 'success', failed: 'danger' }
+  const map = {
+    pending: 'info', extracting: 'warning', recognizing: 'warning',
+    translating: 'warning', generating: 'warning',
+    done: 'success', failed: 'danger', cancelled: 'info'
+  }
   return map[status.value] || 'info'
 })
 
 const statusText = computed(() => {
-  const map = { pending: '等待中', processing: '处理中', done: '已完成', completed: '已完成', failed: '失败' }
+  const map = {
+    pending: '等待中', extracting: '提取音频', recognizing: '语音识别',
+    translating: '翻译中', generating: '生成字幕',
+    done: '已完成', failed: '失败', cancelled: '已取消'
+  }
   return map[status.value] || status.value
 })
 
-function handleWsMessage(data) {
-  if (data.step !== undefined) currentStep.value = data.step
-  if (data.progress !== undefined) totalProgress.value = data.progress
-  if (data.status) status.value = data.status
-  if (data.message) message.value = data.message
-  if (data.error) errorMsg.value = data.error
+// 从进度推导友好描述（后端不在 DB 存 message，WS 不再使用）
+const statusMessage = computed(() => {
+  if (isFinished.value) return ''
+  const range = PHASE_RANGE[status.value]
+  if (!range) return ''
+  const pct = Math.round((totalProgress.value - range.min) / (range.max - range.min) * 100)
+  const clamped = Math.max(0, Math.min(100, pct))  // 边界保护：0~100
+  const phaseDesc = {
+    extracting:  `正在提取音频... ${clamped}%`,
+    recognizing: `正在语音识别... ${clamped}%`,
+    translating: `正在翻译字幕... ${clamped}%`,
+    generating:  `正在生成 SRT 文件... ${clamped}%`,
+  }
+  return phaseDesc[status.value] || ''
+})
 
-  if (data.status === 'done' || data.status === 'completed') {
-    totalProgress.value = 100
-    currentStep.value = 4
+const elapsedTime = computed(() => {
+  if (!createdAt.value) return ''
+  const seconds = Math.floor((now.value - createdAt.value) / 1000)
+  if (seconds < 60) return `${seconds} 秒`
+  const mins = Math.floor(seconds / 60)
+  const secs = seconds % 60
+  return `${mins} 分 ${secs} 秒`
+})
+
+// ── 轮询：每 2 秒拉取任务状态 ──
+async function fetchTaskStatus() {
+  try {
+    const res = await api.getTask(taskId.value)
+    const task = res.data
+
+    // 更新状态
+    if (task.status) {
+      status.value = task.status
+      const stepIdx = STEP_MAP[task.status]
+      if (stepIdx !== undefined && stepIdx >= 0) currentStep.value = stepIdx
+    }
+    if (task.progress !== undefined) totalProgress.value = task.progress
+    if (task.error_message) errorMsg.value = task.error_message
+    if (task.created_at) {
+      let dt = task.created_at
+      // 后端 utcnow() 无时区标记，补 Z 防止被当成当地时间
+      if (typeof dt === 'string' && !dt.endsWith('Z') && !dt.includes('+')) {
+        dt += 'Z'
+      }
+      createdAt.value = new Date(dt).getTime()
+    }
+
+    loading.value = false
+
+    // 终态则停止轮询
+    if (FINAL_STATUSES.includes(task.status)) {
+      stopPolling()
+    }
+  } catch (e) {
+    if (!loading.value) {
+      // 首次加载失败才报错
+    }
   }
 }
 
-function handleWsClose() {
-  if (!status.value || status.value === 'processing') {
-    ElMessage.warning('WebSocket 连接已断开')
-  }
+function startPolling() {
+  fetchTaskStatus()  // 立即执行一次
+  pollTimer = setInterval(fetchTaskStatus, 2000)
+  clockTimer = setInterval(() => { now.value = Date.now() }, 1000)
+}
+
+function stopPolling() {
+  if (pollTimer) { clearInterval(pollTimer); pollTimer = null }
+  if (clockTimer) { clearInterval(clockTimer); clockTimer = null }
 }
 
 async function handleDownload() {
@@ -103,24 +196,12 @@ async function handleDownload() {
   }
 }
 
-onMounted(async () => {
-  // Try to fetch existing task status first
-  try {
-    const res = await api.getTask(taskId.value)
-    const task = res.data
-    if (task.status) status.value = task.status
-    if (task.progress) totalProgress.value = task.progress
-    if (task.step !== undefined) currentStep.value = task.step
-  } catch (e) {
-    // ignore
-  }
-
-  // Connect WebSocket
-  wsConnection = createWebSocket(taskId.value, handleWsMessage, handleWsClose)
+onMounted(() => {
+  startPolling()
 })
 
 onUnmounted(() => {
-  if (wsConnection) wsConnection.close()
+  stopPolling()
 })
 </script>
 
@@ -141,6 +222,8 @@ onUnmounted(() => {
 .progress-header .title {
   font-weight: 600;
   font-size: 18px;
+  user-select: none;
+  cursor: default;
 }
 .progress-detail {
   padding: 16px 0;

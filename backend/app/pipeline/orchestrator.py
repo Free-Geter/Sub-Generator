@@ -2,7 +2,7 @@ import asyncio
 import logging
 import uuid
 import os
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from sqlalchemy import select
@@ -86,7 +86,11 @@ class PipelineOrchestrator:
 
             # Step 3: 语音识别
             await self._update_task_status(task_id, "recognizing", 30, "语音识别中...")
-            recognizer = SpeechRecognizer(model_size=whisper_model, device=self.settings.whisper_device)
+            recognizer = SpeechRecognizer(
+                model_size=whisper_model,
+                device=self.settings.whisper_device,
+                download_root=self.settings.whisper_model_dir,
+            )
 
             # SpeechRecognizer 的 callback 在子线程中调用（通过 asyncio.to_thread）
             def recognize_progress(p):
@@ -133,6 +137,7 @@ class PipelineOrchestrator:
                     "openai_base_url": self.settings.openai_base_url,
                     "ollama_base_url": self.settings.ollama_base_url,
                     "ollama_model": self.settings.ollama_model,
+                    "translation_prompt": self.settings.translation_prompt,
                 },
             )
 
@@ -191,7 +196,7 @@ class PipelineOrchestrator:
                 task.status = "done"
                 task.progress = 100
                 task.output_file = srt_path
-                task.updated_at = datetime.utcnow()
+                task.updated_at = datetime.now(timezone.utc)
                 await session.commit()
 
             await progress_manager.broadcast(task_id, {
@@ -219,7 +224,7 @@ class PipelineOrchestrator:
             task = await session.get(TaskModel, task_id)
             if task and task.status not in ("done", "failed", "cancelled"):
                 task.status = "cancelled"
-                task.updated_at = datetime.utcnow()
+                task.updated_at = datetime.now(timezone.utc)
                 await session.commit()
 
         self.temp_manager.cleanup_task(task_id)
@@ -230,7 +235,7 @@ class PipelineOrchestrator:
             "message": "任务已取消",
         })
 
-    async def retranslate(self, task_id: str, target_lang: str, engine: str):
+    async def retranslate(self, task_id: str, target_lang: str, engine: str, ollama_model: Optional[str] = None):
         """
         重新翻译（复用已识别的原文）
 
@@ -238,6 +243,9 @@ class PipelineOrchestrator:
         2. 仅执行翻译步骤
         3. 更新 Segment.translated_text
         4. 重新生成 SRT
+
+        Args:
+            ollama_model: 用户可选覆盖 Ollama 模型，为 None 时使用全局设置
         """
         try:
             # 加载现有 segments
@@ -258,19 +266,34 @@ class PipelineOrchestrator:
 
                 video_path = task.video_path
 
-            # 更新任务状态
-            await self._update_task_status(task_id, "translating", 0, "重新翻译中...")
+            # 更新任务状态，重置创建时间（重新翻译相当于新开始）
+            async with async_session() as session:
+                task = await session.get(TaskModel, task_id)
+                task.status = "translating"
+                task.progress = 62
+                task.created_at = datetime.now(timezone.utc)
+                task.updated_at = datetime.now(timezone.utc)
+                await session.commit()
 
-            # 创建翻译器
+            await progress_manager.broadcast(task_id, {
+                "task_id": task_id,
+                "step": "translating",
+                "progress": 62,
+                "message": "重新翻译中...",
+            })
+
+            # 创建翻译器（允许用户覆盖 Ollama 模型）
+            translator_config = {
+                "deepl_api_key": self.settings.deepl_api_key,
+                "openai_api_key": self.settings.openai_api_key,
+                "openai_base_url": self.settings.openai_base_url,
+                "ollama_base_url": self.settings.ollama_base_url,
+                "ollama_model": ollama_model or self.settings.ollama_model,
+                "translation_prompt": self.settings.translation_prompt,
+            }
             translator = Translator(
                 engine=engine,
-                config={
-                    "deepl_api_key": self.settings.deepl_api_key,
-                    "openai_api_key": self.settings.openai_api_key,
-                    "openai_base_url": self.settings.openai_base_url,
-                    "ollama_base_url": self.settings.ollama_base_url,
-                    "ollama_model": self.settings.ollama_model,
-                },
+                config=translator_config,
             )
 
             seg_dicts = [
@@ -284,7 +307,7 @@ class PipelineOrchestrator:
 
             def translate_progress(p):
                 asyncio.ensure_future(
-                    self._update_task_status(task_id, "translating", p, f"翻译: {p:.0f}%")
+                    self._update_task_status(task_id, "translating", 62 + p * 0.28, f"翻译: {p:.0f}%")
                 )
 
             translated = await translator.translate_segments(seg_dicts, target_lang, translate_progress)
@@ -302,7 +325,7 @@ class PipelineOrchestrator:
                 await session.commit()
 
             # 重新生成 SRT
-            await self._update_task_status(task_id, "generating", 90, "生成字幕文件...")
+            await self._update_task_status(task_id, "generating", 92, "生成字幕文件...")
             output_dir = os.path.join(self.settings.data_dir, "outputs")
             generator = SRTGenerator(output_dir=output_dir)
 
@@ -327,7 +350,7 @@ class PipelineOrchestrator:
                 task.target_lang = target_lang
                 task.translation_engine = engine
                 task.output_file = srt_path
-                task.updated_at = datetime.utcnow()
+                task.updated_at = datetime.now(timezone.utc)
                 await session.commit()
 
             await progress_manager.broadcast(task_id, {
@@ -343,12 +366,13 @@ class PipelineOrchestrator:
 
     async def _update_task_status(self, task_id: str, status: str, progress: float, message: str = ""):
         """更新数据库中的任务状态并推送 WebSocket"""
+        progress = round(progress, 1)  # 统一取整，避免前端显示过多小数位
         async with async_session() as session:
             task = await session.get(TaskModel, task_id)
             if task:
                 task.status = status
                 task.progress = progress
-                task.updated_at = datetime.utcnow()
+                task.updated_at = datetime.now(timezone.utc)
                 await session.commit()
 
         await progress_manager.broadcast(task_id, {
@@ -365,7 +389,7 @@ class PipelineOrchestrator:
             if task:
                 task.status = "failed"
                 task.error_message = error
-                task.updated_at = datetime.utcnow()
+                task.updated_at = datetime.now(timezone.utc)
                 await session.commit()
 
         await progress_manager.broadcast(task_id, {
@@ -384,7 +408,7 @@ class PipelineOrchestrator:
             task = await session.get(TaskModel, task_id)
             if task:
                 task.status = "cancelled"
-                task.updated_at = datetime.utcnow()
+                task.updated_at = datetime.now(timezone.utc)
                 await session.commit()
 
         await progress_manager.broadcast(task_id, {

@@ -22,6 +22,7 @@ class SettingsUpdate(BaseModel):
     ollama_model: Optional[str] = None
     whisper_model: Optional[str] = None
     default_target_lang: Optional[str] = None
+    translation_prompt: Optional[str] = None
 
 
 def _load_settings() -> dict:
@@ -69,6 +70,7 @@ async def get_settings():
         "ollama_model": settings.ollama_model,
         "whisper_model": settings.whisper_model,
         "default_target_lang": settings.default_target_lang,
+        "translation_prompt": settings.translation_prompt,
         "data_dir": settings.data_dir,
     }
 

@@ -80,6 +80,10 @@ onMounted(fetchVideos)
 .file-browser {
   width: 100%;
 }
+.file-browser :deep(.el-table__row) {
+  cursor: pointer;
+  user-select: none;
+}
 .file-name {
   display: flex;
   align-items: center;

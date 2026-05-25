@@ -1,8 +1,8 @@
 import uuid
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_serializer
 from sqlalchemy import Column, DateTime, Float, ForeignKey, Integer, String, func
 from sqlalchemy.orm import relationship
 
@@ -52,8 +52,8 @@ class Segment(Base):
 class TaskCreate(BaseModel):
     video_path: str
     target_lang: str = "zh"
-    translation_engine: str = "deepl"
-    whisper_model: str = "medium"
+    translation_engine: Optional[str] = None
+    whisper_model: Optional[str] = None
 
 
 class TaskResponse(BaseModel):
@@ -71,6 +71,15 @@ class TaskResponse(BaseModel):
     output_file: Optional[str] = None
     created_at: datetime
     updated_at: datetime
+
+    @field_serializer('created_at', 'updated_at')
+    def serialize_datetime(self, dt: datetime) -> str:
+        """序列化 datetime 为带 Z 后缀的 ISO 8601 格式，确保前端正确解析为 UTC"""
+        if dt.tzinfo is None:
+            # SQLite 返回 naive datetime，实际为 UTC
+            return dt.isoformat() + 'Z'
+        else:
+            return dt.astimezone(timezone.utc).isoformat().replace('+00:00', 'Z')
 
     model_config = {"from_attributes": True}
 

@@ -13,7 +13,6 @@
           active-text-color="#ffd04b"
         >
           <el-menu-item index="/">首页</el-menu-item>
-          <el-menu-item index="/progress">进度</el-menu-item>
           <el-menu-item index="/history">历史记录</el-menu-item>
           <el-menu-item index="/settings">设置</el-menu-item>
         </el-menu>
@@ -54,6 +53,8 @@ body {
   font-size: 20px;
   white-space: nowrap;
   margin-right: 40px;
+  cursor: default;
+  user-select: none;
 }
 .top-menu {
   border-bottom: none !important;
@@ -61,6 +62,8 @@ body {
 }
 .top-menu .el-menu-item {
   font-size: 15px;
+  cursor: pointer !important;
+  user-select: none;
 }
 .top-menu .el-menu-item:hover {
   background-color: #66b1ff !important;

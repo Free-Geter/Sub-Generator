@@ -26,22 +26,6 @@
                 <el-option label="西班牙文" value="es" />
               </el-select>
             </el-form-item>
-            <el-form-item label="翻译引擎">
-              <el-radio-group v-model="form.engine">
-                <el-radio value="deepl">DeepL</el-radio>
-                <el-radio value="openai">OpenAI</el-radio>
-                <el-radio value="ollama">Ollama</el-radio>
-              </el-radio-group>
-            </el-form-item>
-            <el-form-item label="Whisper 模型">
-              <el-select v-model="form.whisper_model" placeholder="请选择模型" style="width: 100%">
-                <el-option label="tiny" value="tiny" />
-                <el-option label="base" value="base" />
-                <el-option label="small" value="small" />
-                <el-option label="medium" value="medium" />
-                <el-option label="large-v2" value="large-v2" />
-              </el-select>
-            </el-form-item>
           </el-form>
         </el-card>
 
@@ -82,9 +66,7 @@ const selectedVideo = ref(null)
 const submitting = ref(false)
 
 const form = reactive({
-  target_language: 'zh',
-  engine: 'deepl',
-  whisper_model: 'base'
+  target_language: 'zh'
 })
 
 function handleVideoSelect(video) {
@@ -100,9 +82,7 @@ async function handleStart() {
   try {
     const payload = {
       video_path: selectedVideo.value.path || selectedVideo.value.name,
-      target_language: form.target_language,
-      engine: form.engine,
-      whisper_model: form.whisper_model
+      target_lang: form.target_language
     }
     const res = await api.createTask(payload)
     const taskId = res.data.id || res.data.task_id
@@ -128,6 +108,8 @@ async function handleStart() {
 .card-title {
   font-weight: 600;
   font-size: 16px;
+  user-select: none;
+  cursor: default;
 }
 .selected-info {
   margin: 16px 0;

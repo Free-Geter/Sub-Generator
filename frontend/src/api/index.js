@@ -14,11 +14,14 @@ export default {
   createTask: (data) => api.post('/tasks', data),
   getTask: (id) => api.get(`/tasks/${id}`),
   cancelTask: (id) => api.delete(`/tasks/${id}`),
+  rerunTask: (id) => api.post(`/tasks/${id}/rerun`),
   downloadSrt: (id) => api.get(`/tasks/${id}/srt`, { responseType: 'blob' }),
 
   // 历史
   getHistory: () => api.get('/history'),
   retranslate: (id, data) => api.post(`/history/${id}/retranslate`, data),
+  deleteTask: (id) => api.delete(`/history/${id}`),
+  deleteTasks: (ids) => api.delete('/history/batch', { data: { ids } }),
 
   // 设置
   getSettings: () => api.get('/settings'),

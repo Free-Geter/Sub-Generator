@@ -26,7 +26,7 @@
         </template>
 
         <el-form-item label="默认翻译引擎">
-          <el-radio-group v-model="form.engine">
+          <el-radio-group v-model="form.translation_engine">
             <el-radio value="deepl">DeepL</el-radio>
             <el-radio value="openai">OpenAI</el-radio>
             <el-radio value="ollama">Ollama</el-radio>
@@ -34,14 +34,14 @@
         </el-form-item>
 
         <!-- DeepL 配置 -->
-        <template v-if="form.engine === 'deepl'">
+        <template v-if="form.translation_engine === 'deepl'">
           <el-form-item label="DeepL API Key">
             <el-input v-model="form.deepl_api_key" placeholder="请输入 DeepL API Key" show-password />
           </el-form-item>
         </template>
 
         <!-- OpenAI 配置 -->
-        <template v-if="form.engine === 'openai'">
+        <template v-if="form.translation_engine === 'openai'">
           <el-form-item label="OpenAI API Key">
             <el-input v-model="form.openai_api_key" placeholder="请输入 OpenAI API Key" show-password />
           </el-form-item>
@@ -51,7 +51,7 @@
         </template>
 
         <!-- Ollama 配置 -->
-        <template v-if="form.engine === 'ollama'">
+        <template v-if="form.translation_engine === 'ollama'">
           <el-form-item label="Ollama Base URL">
             <el-input v-model="form.ollama_base_url" placeholder="http://localhost:11434" />
           </el-form-item>
@@ -77,6 +77,28 @@
         </el-form-item>
       </el-card>
 
+      <!-- 翻译 Prompt 配置 -->
+      <el-card class="section-card">
+        <template #header>
+          <span class="section-title">翻译 Prompt（自定义提示词）</span>
+        </template>
+        <el-form-item>
+          <el-input
+            v-model="form.translation_prompt"
+            type="textarea"
+            :rows="10"
+            :placeholder="defaultPromptPlaceholder"
+            resize="vertical"
+          />
+          <div class="form-tip">
+            留空使用内置默认提示词。支持 <code>{'{target_lang}'}</code> 占位符（如"简体中文""English"等）。
+          </div>
+        </el-form-item>
+        <el-button text type="primary" size="small" @click="resetPrompt">
+          恢复默认提示词
+        </el-button>
+      </el-card>
+
       <div class="form-actions">
         <el-button type="primary" size="large" :loading="saving" @click="handleSave">
           保存设置
@@ -96,14 +118,31 @@ const saving = ref(false)
 
 const form = reactive({
   video_source_dir: '',
-  engine: 'deepl',
+  translation_engine: 'deepl',
   deepl_api_key: '',
   openai_api_key: '',
   openai_base_url: '',
   ollama_base_url: 'http://localhost:11434',
   ollama_model: '',
-  whisper_model: 'base'
+  whisper_model: 'base',
+  translation_prompt: ''
 })
+
+// 内置默认提示词（占位显示用）
+const defaultPromptPlaceholder = `你是一位专业的日文字幕翻译专家。请将以下日文字幕逐行翻译成自然流畅的中文。
+翻译要求：
+1. 输入格式为 [行号] 原文，请保持 [行号] 标记，只输出译文
+2. 严格保持行号顺序和数量一致，每行格式：[行号] 译文
+3. 不要合并、省略、拆分任何行
+4. 注意上下文连贯性，保持对话的流畅感
+5. 保持原文的语气和风格（口语/敬语/随意等）
+6. 人名、地名使用通用中文译名
+7. 遇到日文特有表达时，用地道的中文习惯说法替代`
+
+function resetPrompt() {
+  form.translation_prompt = ''
+  ElMessage.success('已恢复为内置默认提示词')
+}
 
 async function fetchSettings() {
   loading.value = true
